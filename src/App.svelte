@@ -26,10 +26,19 @@
 
   const W = $derived(activeData ? activeData.windows.length : 2);
 
+  let relatedSet: Set<number> | null = null;
+
   const labelList = $derived.by(() => {
     const data = activeData;
-    if (!data || !ui.labels) return [] as { index: number; name: string }[];
-    const limit = data.level === "country" ? 40 : 25;
+    if (!data || ui.labelCount === 0) return [] as { index: number; name: string; tier: number }[];
+    if (ui.selected >= 0) {
+      const wNear = Math.min(Math.round(ui.t), data.windows.length - 1);
+      const ids = [ui.selected];
+      for (let e = 0; e < data.neighbourCount; e++) {
+        ids.push(data.neighbours[(ui.selected * data.windows.length + wNear) * data.neighbourCount + e]);
+      }
+      return ids.map((index, rank) => ({ index, name: data.names[index], tier: rank === 0 ? 0 : 1 }));
+    }
     const scored: { index: number; score: number }[] = [];
     for (let i = 0; i < data.n; i++) {
       let m = 0;
@@ -37,7 +46,9 @@
       if (m >= ui.minExposureLog) scored.push({ index: i, score: m });
     }
     scored.sort((a, b) => b.score - a.score);
-    return scored.slice(0, limit).map(({ index }) => ({ index, name: data.names[index] }));
+    const pool = scored.slice(0, Math.min(scored.length, Math.max(ui.labelCount * 3, 60)));
+    const cut = pool.length ? pool[Math.floor(pool.length * 0.25)].score : 0;
+    return pool.map(({ index, score }) => ({ index, name: data.names[index], tier: score >= cut ? 0 : 1 }));
   });
 
   const pick = (index: number) => {
@@ -72,9 +83,34 @@
     let frame = 0;
     let last = performance.now();
     let direction = 1;
+    const params = new URLSearchParams(window.location.search);
+    for (const key of ["colorBy", "level", "datasetId"] as const) {
+      const value = params.get(key);
+      if (value) (ui as any)[key] = value;
+    }
+    for (const key of ["t", "playSpeed", "sizeContrast", "linkOpacity", "haloScale", "pointScale"] as const) {
+      const value = params.get(key);
+      if (value !== null && !Number.isNaN(Number(value))) (ui as any)[key] = Number(value);
+    }
+    for (const key of ["linkK", "labelCount", "minExposureLog"] as const) {
+      const value = params.get(key);
+      if (value !== null && !Number.isNaN(Number(value))) (ui as any)[key] = Math.round(Number(value));
+    }
+    for (const key of ["singleRun", "halo", "trails", "autoRotate", "playing", "view2d"] as const) {
+      const value = params.get(key);
+      if (value !== null) (ui as any)[key] = value === "1" || value === "true";
+    }
+
     (async () => {
       datasets = await loadIndex(`${import.meta.env.BASE_URL}data/`);
-      await switchDataset(datasets[0].id);
+      const requested = params.get("datasetId");
+      await switchDataset(
+        requested && datasets.some((info) => info.id === requested) ? requested : datasets[0].id
+      );
+      const wantSelected = Number(params.get("selected"));
+      if (params.get("selected") !== null && !Number.isNaN(wantSelected)) ui.selected = Math.round(wantSelected);
+      const wantT = Number(params.get("t"));
+      if (params.get("t") !== null && !Number.isNaN(wantT)) ui.t = wantT;
     })();
 
     const onKey = (event: KeyboardEvent) => {
@@ -114,6 +150,7 @@
           }
           scenes.s3.setDim(related);
           scenes.s2.setDim(related);
+          relatedSet = related;
         }
         for (const scene of [scenes.s3, scenes.s2]) {
           scene.apply(ui.t, ui.singleRun, ui.halo, ui.haloScale, ui.pointScale, ui.autoRotate);
@@ -127,13 +164,38 @@
         }
         if (labelHost) {
           const children = labelHost.children;
+          const width = scenes.s3.canvas.clientWidth;
+          const height = scenes.s3.canvas.clientHeight;
+          const placed: { x1: number; y1: number; x2: number; y2: number }[] = [];
+          const selecting = ui.selected >= 0;
+          const maxLabels = selecting ? children.length : ui.labelCount;
           for (let c = 0; c < children.length; c++) {
             const el = children[c] as HTMLElement;
             const index = Number(el.dataset.index);
-            const { x, y, behind } = scenes.s3.project(index, ui.t, ui.singleRun);
-            const off = behind || x < 0 || y < 0 || x > scenes.s3.canvas.clientWidth || y > scenes.s3.canvas.clientHeight;
-            el.style.opacity = off ? "0" : "1";
-            el.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+            let show = placed.length < maxLabels;
+            let x = 0;
+            let y = 0;
+            if (show) {
+              const proj = scenes.s3.project(index, ui.t, ui.singleRun);
+              x = proj.x;
+              y = proj.y;
+              if (proj.behind || x < 0 || y < 12 || x > width - 30 || y > height - 12) show = false;
+            }
+            if (show && !selecting) {
+              const w = 10 + el.textContent!.length * 5.4;
+              const rect = { x1: x - 4, y1: y - 8, x2: x + w, y2: y + 8 };
+              for (const other of placed) {
+                if (rect.x1 < other.x2 && rect.x2 > other.x1 && rect.y1 < other.y2 && rect.y2 > other.y1) {
+                  show = false;
+                  break;
+                }
+              }
+              if (show) placed.push(rect);
+            } else if (show) {
+              placed.push({ x1: x, y1: y, x2: x, y2: y });
+            }
+            el.style.opacity = show ? "" : "0";
+            if (show) el.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
           }
         }
       }
@@ -163,10 +225,13 @@
         s2: new MapScene(c2, { flat: true, data, onPick: pick }),
       };
       dimKey = "";
+      relatedSet = null;
       for (const scene of [scenes.s3, scenes.s2]) {
         scene.setColors(ui.colorBy);
         scene.setVisibility(ui.minExposureLog);
         scene.setLinks(ui.linkK);
+        scene.setLinkOpacity(ui.linkOpacity);
+        scene.setSizes(ui.sizeContrast);
         scene.setMoverTrails(ui.trails);
       }
     });
@@ -201,6 +266,25 @@
   });
 
   $effect(() => {
+    if (!ui.loaded) return;
+    const contrast = ui.sizeContrast;
+    scenes?.s3.setSizes(contrast);
+    scenes?.s2.setSizes(contrast);
+  });
+
+  $effect(() => {
+    if (!ui.loaded) return;
+    const opacity = ui.linkOpacity;
+    scenes?.s3.setLinkOpacity(opacity);
+    scenes?.s2.setLinkOpacity(opacity);
+  });
+
+  const resetView = () => {
+    scenes?.s3.resetView();
+    scenes?.s2.resetView();
+  };
+
+  $effect(() => {
     if (!ui.loaded || ui.selected < 0) return;
     scenes?.s3.focusOn(ui.selected);
   });
@@ -216,8 +300,10 @@
       {#each labelList as label (label.index)}
         <div
           data-index={label.index}
-          class="absolute top-0 left-0 text-[10px] text-white/70 whitespace-nowrap pl-1.5 -translate-y-1/2"
-          style="text-shadow: 0 1px 3px #000"
+          class="absolute top-0 left-0 whitespace-nowrap pl-1.5 -translate-y-1/2 {label.tier === 0
+            ? 'text-[11px] text-white/85 font-medium'
+            : 'text-[9.5px] text-white/55'}"
+          style="text-shadow: 0 1px 3px #000; opacity: 0"
         >{label.name}</div>
       {/each}
     </div>
@@ -262,14 +348,14 @@
           with whom, 2008–2019. Blur is measured uncertainty, not style.
         </p>
       </div>
-      <Legend />
+      <Legend data={activeData ?? instData} />
     {/if}
   </div>
 
   {#if activeData}
     <aside class="w-[340px] shrink-0 h-full overflow-y-auto bg-[#1a1a19] border-l border-white/10 p-4 flex flex-col gap-4">
       <Search data={activeData} />
-      <Controls data={activeData} {datasets} onDataset={switchDataset} />
+      <Controls data={activeData} {datasets} onDataset={switchDataset} onReset={resetView} />
       <Detail data={activeData} {instData} />
       <div class="mt-auto pt-3 border-t border-white/10 text-[11px] text-[#898781] leading-relaxed">
         <button class="underline hover:text-white" onclick={() => (ui.aboutOpen = true)}>about this map</button>

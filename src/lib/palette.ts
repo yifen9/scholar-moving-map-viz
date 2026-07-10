@@ -47,3 +47,22 @@ export function hex(color: string): [number, number, number] {
   const v = parseInt(color.slice(1), 16);
   return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
 }
+
+export function hsl(h: number, s: number, l: number): [number, number, number] {
+  const a = s * Math.min(l, 1 - l);
+  const f = (n: number) => {
+    const k = (n + h / 30) % 12;
+    return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+  };
+  return [f(0), f(8), f(4)];
+}
+
+export function countryColor(index: number): [number, number, number] {
+  const hue = (index * 137.508) % 360;
+  const light = 0.52 + 0.14 * ((index * 0.618034) % 1);
+  return hsl(hue, 0.65, light);
+}
+
+export function cssColor(rgb: [number, number, number]): string {
+  return `rgb(${rgb.map((v) => Math.round(v * 255)).join(",")})`;
+}

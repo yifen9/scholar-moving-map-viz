@@ -1,4 +1,4 @@
-export type ColorMode = "continent" | "speed" | "exposure";
+export type ColorMode = "continent" | "country" | "speed" | "exposure";
 export type Level = "institution" | "country";
 
 export const ui = $state({
@@ -13,8 +13,10 @@ export const ui = $state({
   trails: false,
   view2d: true,
   pointScale: 1,
+  sizeContrast: 0.7,
   linkK: 2,
-  labels: true,
+  linkOpacity: 0.06,
+  labelCount: 25,
   autoRotate: false,
   level: "institution" as Level,
   datasetId: "",

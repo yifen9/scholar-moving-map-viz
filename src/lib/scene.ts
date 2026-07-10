@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import type { Dataset } from "./data";
-import { CONTINENT_COLORS, SPEED_RAMP, hex, rampColor } from "./palette";
+import { CONTINENT_COLORS, SPEED_RAMP, countryColor, hex, rampColor } from "./palette";
 import { CONTINENT_NAMES } from "./continents";
 
 const VERTEX = /* glsl */ `
@@ -116,9 +116,12 @@ export class MapScene {
   edgeWindow = -1;
   linkK = 0;
   edgeOpacity = 0.06;
+  baseEdgeOpacity = 0.06;
+  dimActive = false;
   edgeSingle = false;
   colorMode = "continent";
   minExposureLog = 3;
+  exposureNorm!: Float32Array;
   disposed = false;
 
   constructor(canvas: HTMLCanvasElement, options: SceneOptions) {
@@ -166,13 +169,20 @@ export class MapScene {
       this.geometry.setAttribute(name, new THREE.BufferAttribute(new Float32Array(n), 1));
     }
     this.geometry.setAttribute("aColor", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
-    const sizes = new Float32Array(n);
+    this.exposureNorm = new Float32Array(n);
+    let expMin = Infinity;
+    let expMax = -Infinity;
     for (let i = 0; i < n; i++) {
       let m = 0;
       for (let w = 0; w < this.W; w++) m = Math.max(m, this.data.exposure[i * this.W + w]);
-      sizes[i] = 1.3 + 0.38 * m;
+      this.exposureNorm[i] = m;
+      expMin = Math.min(expMin, m);
+      expMax = Math.max(expMax, m);
     }
-    this.geometry.setAttribute("aSize", new THREE.BufferAttribute(sizes, 1));
+    const span = Math.max(expMax - expMin, 1e-6);
+    for (let i = 0; i < n; i++) this.exposureNorm[i] = (this.exposureNorm[i] - expMin) / span;
+    this.geometry.setAttribute("aSize", new THREE.BufferAttribute(new Float32Array(n), 1));
+    this.setSizes(0.7);
     this.geometry.setAttribute("aVisible", new THREE.BufferAttribute(new Float32Array(n).fill(1), 1));
     this.geometry.setAttribute("aDim", new THREE.BufferAttribute(new Float32Array(n).fill(1), 1));
     this.geometry.setAttribute("position", this.geometry.getAttribute("pA"));
@@ -334,6 +344,8 @@ export class MapScene {
       let rgb: [number, number, number];
       if (mode === "continent") {
         rgb = hex(CONTINENT_COLORS[CONTINENT_NAMES[d.continentIndex[i]]]);
+      } else if (mode === "country") {
+        rgb = countryColor(d.countryIndex[i]);
       } else if (mode === "speed") {
         rgb = rampColor(SPEED_RAMP, Math.min(d.speed[i] / 0.25, 1));
       } else {
@@ -370,8 +382,38 @@ export class MapScene {
       for (let i = 0; i < this.data.n; i++) array[i] = related.has(i) ? 1 : 0.08;
     }
     attribute.needsUpdate = true;
-    this.edgeOpacity = related ? 0.012 : 0.06;
+    this.dimActive = !!related;
+    this.applyEdgeOpacity();
+  }
+
+  setSizes(contrast: number): void {
+    const attribute = this.geometry.getAttribute("aSize") as THREE.BufferAttribute;
+    const array = attribute.array as Float32Array;
+    for (let i = 0; i < this.data.n; i++) {
+      array[i] = 1.5 + 6.5 * contrast * this.exposureNorm[i];
+    }
+    attribute.needsUpdate = true;
+  }
+
+  setLinkOpacity(opacity: number): void {
+    this.baseEdgeOpacity = opacity;
+    this.applyEdgeOpacity();
+  }
+
+  applyEdgeOpacity(): void {
+    this.edgeOpacity = this.baseEdgeOpacity * (this.dimActive ? 0.2 : 1);
     if (this.edgeUniforms) this.edgeUniforms.uOpacity.value = this.edgeOpacity;
+  }
+
+  resetView(): void {
+    this.controls.target.set(0, 0, 0);
+    if (this.flat) {
+      this.camera.position.set(0, 0, 2);
+      (this.camera as THREE.OrthographicCamera).zoom = 1;
+      this.camera.updateProjectionMatrix();
+    } else {
+      this.camera.position.set(1.55 * this.radius, 1.2 * this.radius, 1.95 * this.radius);
+    }
   }
 
   setLinks(k: number): void {

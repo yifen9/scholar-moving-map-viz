@@ -9,9 +9,11 @@
       <p class="text-[#c3c2b7]">
         Each point is a research institution, placed by skip-gram embeddings of researcher career
         trajectories from OpenAlex (2008–2019): institutions that exchange researchers sit close together.
-        Time is cut into 3-year windows — stepped yearly at the fine resolution, disjoint at the coarse
-        one — each embedded independently. Motion between frames is measured, not modelled. The country
-        level shows exposure-weighted centroids of each country's institutions.
+        Time is cut into windows, each embedded independently — motion between frames is measured, not
+        modelled. Three resolutions: yearly steps with a 3-year window (smooth, recommended), disjoint
+        3-year blocks (fully independent frames), and raw 1-year windows (noisy but unsmoothed — watch
+        the halos grow). The country level shows exposure-weighted centroids of each country's
+        institutions.
       </p>
       <p class="text-[#c3c2b7] mt-2">
         Every window is trained from two disjoint halves of the researcher population, twice each. The
