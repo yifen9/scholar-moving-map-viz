@@ -19,6 +19,7 @@ uniform float uScale;
 uniform float uHaloPass;
 uniform float uHaloScale;
 uniform float uPixelRatio;
+uniform float uCoreAlpha;
 varying vec3 vColor;
 varying float vAlpha;
 
@@ -32,12 +33,11 @@ void main() {
   float core = aSize * uScale;
   float halo = core * (1.8 + 7.0 * uncertainty * uHaloScale);
   float size = mix(core, halo, uHaloPass);
-  gl_PointSize = min(size * uPixelRatio * 2.0 / -mv.z, 56.0);
+  gl_PointSize = min(size * uPixelRatio * 2.0 / -mv.z, 96.0);
   gl_Position = projectionMatrix * mv;
   vColor = aColor;
-  float coreAlpha = 0.85;
-  float haloAlpha = 0.38 * uncertainty * aDim;
-  vAlpha = mix(coreAlpha, haloAlpha, uHaloPass) * aVisible * aDim;
+  float haloAlpha = 0.45 * uCoreAlpha * uncertainty * aDim;
+  vAlpha = mix(uCoreAlpha, haloAlpha, uHaloPass) * aVisible * aDim;
 }
 `;
 
@@ -104,7 +104,10 @@ export class MapScene {
   selEdges: THREE.LineSegments;
   marker: THREE.Mesh;
   trail: THREE.Line;
-  moverTrails: THREE.LineSegments | null = null;
+  fadeScene = new THREE.Scene();
+  fadeCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  fadeMaterial: THREE.MeshBasicMaterial;
+  trailAmount = 0;
   data: Dataset;
   flat: boolean;
   radius = 1;
@@ -122,6 +125,8 @@ export class MapScene {
   colorMode = "continent";
   minExposureLog = 3;
   exposureNorm!: Float32Array;
+  speedRank: Float32Array | null = null;
+  exposureRank: Float32Array | null = null;
   disposed = false;
 
   constructor(canvas: HTMLCanvasElement, options: SceneOptions) {
@@ -196,6 +201,7 @@ export class MapScene {
       uHaloPass: { value: haloPass },
       uHaloScale: { value: 1 },
       uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
+      uCoreAlpha: { value: 0.85 },
     });
     this.uniformsCore = makeUniforms(0);
     this.uniformsHalo = makeUniforms(1);
@@ -246,6 +252,17 @@ export class MapScene {
     this.trail.visible = false;
     this.trail.frustumCulled = false;
     this.scene.add(this.trail);
+
+    this.fadeMaterial = new THREE.MeshBasicMaterial({
+      color: "#0d0d0d",
+      transparent: true,
+      opacity: 1,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const fadeQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.fadeMaterial);
+    fadeQuad.frustumCulled = false;
+    this.fadeScene.add(fadeQuad);
 
     canvas.addEventListener("click", (event) => {
       if (this.dragDistance(event) > 6) return;
@@ -331,15 +348,21 @@ export class MapScene {
     return out;
   }
 
+  scaleOf(values: Float32Array): Float32Array {
+    const sorted = Float32Array.from(values).sort();
+    const hi = sorted[Math.floor((sorted.length - 1) * 0.95)] || 1;
+    const scaled = new Float32Array(values.length);
+    for (let i = 0; i < values.length; i++) scaled[i] = Math.min(Math.max(values[i] / hi, 0), 1);
+    return scaled;
+  }
+
   setColors(mode: string): void {
     this.colorMode = mode;
     const d = this.data;
     const attribute = this.geometry.getAttribute("aColor") as THREE.BufferAttribute;
     const array = attribute.array as Float32Array;
-    let maxExposure = 0;
-    if (mode === "exposure") {
-      for (let i = 0; i < d.n; i++) maxExposure = Math.max(maxExposure, d.exposure[i * this.W + this.W - 1]);
-    }
+    if (mode === "speed" && !this.speedRank) this.speedRank = this.scaleOf(d.speed);
+    if (mode === "exposure" && !this.exposureRank) this.exposureRank = this.scaleOf(this.exposureNorm);
     for (let i = 0; i < d.n; i++) {
       let rgb: [number, number, number];
       if (mode === "continent") {
@@ -347,9 +370,9 @@ export class MapScene {
       } else if (mode === "country") {
         rgb = countryColor(d.countryIndex[i]);
       } else if (mode === "speed") {
-        rgb = rampColor(SPEED_RAMP, Math.min(d.speed[i] / 0.25, 1));
+        rgb = rampColor(SPEED_RAMP, this.speedRank![i]);
       } else {
-        rgb = rampColor(SPEED_RAMP, d.exposure[i * this.W + this.W - 1] / (maxExposure || 1));
+        rgb = rampColor(SPEED_RAMP, this.exposureRank![i]);
       }
       array[i * 3] = rgb[0];
       array[i * 3 + 1] = rgb[1];
@@ -390,9 +413,14 @@ export class MapScene {
     const attribute = this.geometry.getAttribute("aSize") as THREE.BufferAttribute;
     const array = attribute.array as Float32Array;
     for (let i = 0; i < this.data.n; i++) {
-      array[i] = 1.5 + 6.5 * contrast * this.exposureNorm[i];
+      array[i] = 1.4 + 10 * contrast * Math.pow(this.exposureNorm[i], 1.3);
     }
     attribute.needsUpdate = true;
+  }
+
+  setPointOpacity(alpha: number): void {
+    this.uniformsCore.uCoreAlpha.value = alpha;
+    this.uniformsHalo.uCoreAlpha.value = alpha;
   }
 
   setLinkOpacity(opacity: number): void {
@@ -553,45 +581,6 @@ export class MapScene {
     return best;
   }
 
-  setMoverTrails(on: boolean): void {
-    if (on && !this.moverTrails) {
-      const d = this.data;
-      const W = this.W;
-      const candidates: number[] = [];
-      for (let i = 0; i < d.n; i++) {
-        if (d.exposure[i * W] >= 5 && d.speed[i] > 0) candidates.push(i);
-      }
-      candidates.sort((a, b) => d.speed[b] - d.speed[a]);
-      const top = candidates.slice(0, 250);
-      const segments = W - 1;
-      const vertices = new Float32Array(top.length * segments * 2 * 3);
-      const colors = new Float32Array(top.length * segments * 2 * 3);
-      let offset = 0;
-      for (const index of top) {
-        const rgb = rampColor(SPEED_RAMP, Math.min(d.speed[index] / 0.25, 1));
-        for (let w = 0; w < segments; w++) {
-          for (const ww of [w, w + 1]) {
-            for (let k = 0; k < 3; k++) {
-              vertices[offset] = this.flat && k === 2 ? 0 : d.positions[(index * W + ww) * 3 + k];
-              colors[offset] = rgb[k];
-              offset++;
-            }
-          }
-        }
-      }
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.BufferAttribute(vertices, 3));
-      geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-      this.moverTrails = new THREE.LineSegments(
-        geometry,
-        new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.35 })
-      );
-      this.moverTrails.frustumCulled = false;
-      this.scene.add(this.moverTrails);
-    }
-    if (this.moverTrails) this.moverTrails.visible = on;
-  }
-
   focusOn(index: number): void {
     const p = this.positionAt(index, (this.uniformsCore.uF.value as number) + this.segment, false);
     this.controls.target.copy(p);
@@ -656,9 +645,21 @@ export class MapScene {
     this.camera.updateProjectionMatrix();
   }
 
+  setTrail(amount: number): void {
+    this.trailAmount = amount;
+  }
+
   render(): void {
     this.controls.update();
-    this.renderer.render(this.scene, this.camera);
+    if (this.trailAmount > 0) {
+      this.renderer.autoClear = false;
+      this.fadeMaterial.opacity = 1 - this.trailAmount;
+      this.renderer.render(this.fadeScene, this.fadeCamera);
+      this.renderer.render(this.scene, this.camera);
+    } else {
+      this.renderer.autoClear = true;
+      this.renderer.render(this.scene, this.camera);
+    }
   }
 
   dispose(): void {
@@ -670,7 +671,6 @@ export class MapScene {
     this.selEdges.geometry.dispose();
     this.trail.geometry.dispose();
     this.marker.geometry.dispose();
-    this.moverTrails?.geometry.dispose();
     this.renderer.dispose();
   }
 }

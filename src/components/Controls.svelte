@@ -105,14 +105,21 @@
       >{mode.label}</button>
     {/each}
   </div>
-  <label class="block">
+  <label class="block" title="0 = equal dots, 3 = size strongly proportional to how often an institution is seen">
     size contrast <span class="text-white tabular-nums">{ui.sizeContrast.toFixed(1)}</span>
-    <span class="text-[#898781]">(0 = equal dots, 2 = size ∝ how often seen)</span>
-    <input type="range" min="0" max="2" step="0.1" bind:value={ui.sizeContrast} class="w-full accent-[#3987e5]" />
+    <input type="range" min="0" max="3" step="0.1" bind:value={ui.sizeContrast} class="w-full accent-[#3987e5]" />
   </label>
   <label class="block">
     point size <span class="text-white tabular-nums">{ui.pointScale.toFixed(1)}×</span>
     <input type="range" min="0.4" max="2.5" step="0.1" bind:value={ui.pointScale} class="w-full accent-[#3987e5]" />
+  </label>
+  <label class="block" title="lower to see through dense regions">
+    point opacity <span class="text-white tabular-nums">{ui.pointOpacity.toFixed(2)}</span>
+    <input type="range" min="0.1" max="1" step="0.05" bind:value={ui.pointOpacity} class="w-full accent-[#3987e5]" />
+  </label>
+  <label class="block" title="motion streaks during playback — still points stay sharp, moving points smear">
+    motion trail <span class="text-white tabular-nums">{ui.trail === 0 ? "off" : ui.trail.toFixed(2)}</span>
+    <input type="range" min="0" max="0.95" step="0.05" bind:value={ui.trail} class="w-full accent-[#3987e5]" />
   </label>
 
   {@render heading("links & labels")}
@@ -126,13 +133,9 @@
       <input type="range" min="0.01" max="0.3" step="0.01" bind:value={ui.linkOpacity} class="w-full accent-[#3987e5]" />
     </label>
   {/if}
-  <label class="block">
+  <label class="block" title="labels adapt to zoom — zoom into a region to reveal its institutions">
     name labels <span class="text-white tabular-nums">{ui.labelCount === 0 ? "off" : ui.labelCount}</span>
-    <input type="range" min="0" max="80" step="5" bind:value={ui.labelCount} class="w-full accent-[#3987e5]" />
-  </label>
-  <label class="flex items-center justify-between">
-    <span>trails of top movers</span>
-    <input type="checkbox" bind:checked={ui.trails} class="accent-[#3987e5]" />
+    <input type="range" min="0" max="120" step="5" bind:value={ui.labelCount} class="w-full accent-[#3987e5]" />
   </label>
 
   {@render heading("uncertainty")}
