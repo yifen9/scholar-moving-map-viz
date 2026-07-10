@@ -4,11 +4,13 @@ export interface Dataset {
   n: number;
   windows: string[];
   stepYears: number;
+  components: number;
   neighbourCount: number;
   varianceExplained: number[];
   names: string[];
   countries: string[];
   countryIndex: Uint8Array;
+  countryRank: Uint16Array;
   continentIndex: Uint8Array;
   positions: Float32Array;
   positionsSingle: Float32Array;
@@ -17,6 +19,7 @@ export interface Dataset {
   speed: Float32Array;
   exposure: Float32Array;
   neighbours: Uint16Array;
+  neighbourSims: Uint8Array;
   level: "institution" | "country";
 }
 
@@ -37,11 +40,20 @@ export async function loadIndex(base: string): Promise<DatasetInfo[]> {
   return response.json();
 }
 
+function rankCountries(countryIndex: Uint8Array, total: number): Uint16Array {
+  const counts = new Uint32Array(total);
+  for (const cc of countryIndex) counts[cc]++;
+  const order = Array.from({ length: total }, (_, i) => i).sort((a, b) => counts[b] - counts[a]);
+  const rank = new Uint16Array(total);
+  for (let r = 0; r < total; r++) rank[order[r]] = r;
+  return rank;
+}
+
 export async function loadDataset(base: string, id: string): Promise<Dataset> {
   const root = `${base}${id}/`;
   const manifest = await (await fetch(`${root}manifest.json`)).json();
   const names: string[] = await (await fetch(`${root}names.json`)).json();
-  const [pos, posSingle, rel, rho, speed, exposure, neighbours, ccIndex] = await Promise.all([
+  const [pos, posSingle, rel, rho, speed, exposure, neighbours, sims, ccIndex] = await Promise.all([
     buffer(root, "positions.bin"),
     buffer(root, "positions_single.bin"),
     buffer(root, "reliability.bin"),
@@ -49,6 +61,7 @@ export async function loadDataset(base: string, id: string): Promise<Dataset> {
     buffer(root, "speed.bin"),
     buffer(root, "exposure.bin"),
     buffer(root, "neighbours.bin"),
+    buffer(root, "neighbour_sims.bin").catch(() => new ArrayBuffer(0)),
     buffer(root, "country_index.bin"),
   ]);
   const countryIndex = new Uint8Array(ccIndex);
@@ -57,15 +70,19 @@ export async function loadDataset(base: string, id: string): Promise<Dataset> {
   for (let i = 0; i < countryIndex.length; i++) {
     continentIndex[i] = continentOf(countries[countryIndex[i]]);
   }
+  const neighbourArray = new Uint16Array(neighbours);
+  const simArray = sims.byteLength > 0 ? new Uint8Array(sims) : new Uint8Array(neighbourArray.length).fill(255);
   return {
     n: manifest.n,
     windows: manifest.windows,
     stepYears: manifest.step_years ?? 3,
+    components: manifest.components ?? 3,
     neighbourCount: manifest.neighbours,
     varianceExplained: manifest.variance_explained,
     names,
     countries,
     countryIndex,
+    countryRank: rankCountries(countryIndex, countries.length),
     continentIndex,
     positions: new Float32Array(pos),
     positionsSingle: new Float32Array(posSingle),
@@ -73,7 +90,8 @@ export async function loadDataset(base: string, id: string): Promise<Dataset> {
     rho: new Float32Array(rho),
     speed: new Float32Array(speed),
     exposure: new Float32Array(exposure),
-    neighbours: new Uint16Array(neighbours),
+    neighbours: neighbourArray,
+    neighbourSims: simArray,
     level: "institution",
   };
 }
@@ -91,6 +109,7 @@ export function countryName(cc: string): string {
 
 export function aggregateCountries(data: Dataset): Dataset {
   const W = data.windows.length;
+  const C = data.components;
   const codes: number[] = [];
   const memberOf = new Map<number, number>();
   for (let i = 0; i < data.n; i++) {
@@ -101,8 +120,8 @@ export function aggregateCountries(data: Dataset): Dataset {
     }
   }
   const m = codes.length;
-  const positions = new Float32Array(m * W * 3);
-  const positionsSingle = new Float32Array(m * W * 3);
+  const positions = new Float32Array(m * W * C);
+  const positionsSingle = new Float32Array(m * W * C);
   const reliability = new Float32Array(m * W);
   const exposure = new Float32Array(m * W);
   const rho = new Float32Array(m * (W - 1));
@@ -117,9 +136,9 @@ export function aggregateCountries(data: Dataset): Dataset {
       const cw = c * W + w;
       weightTotal[cw] += weight;
       reliability[cw] += weight * data.reliability[i * W + w];
-      for (let k = 0; k < 3; k++) {
-        positions[cw * 3 + k] += weight * data.positions[(i * W + w) * 3 + k];
-        positionsSingle[cw * 3 + k] += weight * data.positionsSingle[(i * W + w) * 3 + k];
+      for (let k = 0; k < C; k++) {
+        positions[cw * C + k] += weight * data.positions[(i * W + w) * C + k];
+        positionsSingle[cw * C + k] += weight * data.positionsSingle[(i * W + w) * C + k];
       }
     }
     const weight0 = 2 ** data.exposure[i * W];
@@ -133,9 +152,9 @@ export function aggregateCountries(data: Dataset): Dataset {
       const total = Math.max(weightTotal[cw], 1e-9);
       reliability[cw] /= total;
       exposure[cw] = Math.log2(Math.max(total, 1));
-      for (let k = 0; k < 3; k++) {
-        positions[cw * 3 + k] /= total;
-        positionsSingle[cw * 3 + k] /= total;
+      for (let k = 0; k < C; k++) {
+        positions[cw * C + k] /= total;
+        positionsSingle[cw * C + k] /= total;
       }
     }
     const sw = Math.max(speedWeight[c], 1e-9);
@@ -143,22 +162,28 @@ export function aggregateCountries(data: Dataset): Dataset {
     for (let p = 0; p < W - 1; p++) rho[c * (W - 1) + p] /= sw;
   }
 
-  const K = 5;
+  const K = Math.min(10, m - 1);
   const neighbours = new Uint16Array(m * W * K);
+  const neighbourSims = new Uint8Array(m * W * K);
   for (let w = 0; w < W; w++) {
     for (let c = 0; c < m; c++) {
       const distances: { j: number; d: number }[] = [];
       for (let j = 0; j < m; j++) {
         if (j === c) continue;
         let d = 0;
-        for (let k = 0; k < 3; k++) {
-          const delta = positions[(c * W + w) * 3 + k] - positions[(j * W + w) * 3 + k];
+        for (let k = 0; k < C; k++) {
+          const delta = positions[(c * W + w) * C + k] - positions[(j * W + w) * C + k];
           d += delta * delta;
         }
-        distances.push({ j, d });
+        distances.push({ j, d: Math.sqrt(d) });
       }
       distances.sort((a, b) => a.d - b.d);
-      for (let k = 0; k < K; k++) neighbours[(c * W + w) * K + k] = distances[k].j;
+      const dMax = distances[Math.min(K * 3, distances.length - 1)].d || 1;
+      for (let k = 0; k < K; k++) {
+        neighbours[(c * W + w) * K + k] = distances[k].j;
+        const sim = Math.max(0, 1 - distances[k].d / dMax);
+        neighbourSims[(c * W + w) * K + k] = Math.round(127 + sim * 128);
+      }
     }
   }
 
@@ -175,11 +200,13 @@ export function aggregateCountries(data: Dataset): Dataset {
     n: m,
     windows: data.windows,
     stepYears: data.stepYears,
+    components: C,
     neighbourCount: K,
     varianceExplained: data.varianceExplained,
     names,
     countries: data.countries,
     countryIndex,
+    countryRank: data.countryRank,
     continentIndex,
     positions,
     positionsSingle,
@@ -188,6 +215,7 @@ export function aggregateCountries(data: Dataset): Dataset {
     speed,
     exposure,
     neighbours,
+    neighbourSims,
     level: "country",
   };
 }

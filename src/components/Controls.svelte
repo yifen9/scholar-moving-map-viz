@@ -22,6 +22,9 @@
 
   const maxT = $derived(data.windows.length - 1);
   const windowLabel = $derived(data.windows[Math.min(Math.round(ui.t), maxT)]);
+  const axisOptions = $derived(
+    data.varianceExplained.map((v, i) => ({ value: i, label: `PC${i + 1} · ${(v * 100).toFixed(0)}%` }))
+  );
   const tickLabels = $derived.by(() => {
     const w = data.windows;
     if (w.length <= 5) return w.map((label) => label.slice(0, 4));
@@ -93,6 +96,25 @@
     </label>
     <button class="px-2 py-0.5 rounded border border-white/10 hover:bg-white/5" onclick={onReset}>reset view</button>
   </div>
+  <div class="flex items-center gap-2" title="which principal component of the similarity profile is shown on each axis">
+    {#each [["x", "axisX"], ["y", "axisY"], ["z", "axisZ"]] as [label, key]}
+      <label class="flex items-center gap-1">
+        {label}
+        <select
+          class="bg-black/40 border border-white/10 rounded px-1 py-0.5 text-xs"
+          bind:value={(ui as any)[key]}
+        >
+          {#each axisOptions as option}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+      </label>
+    {/each}
+  </div>
+  <label class="block" title="radial exaggeration — below 1 expands the crowded centre, above 1 compresses it">
+    spread <span class="text-white tabular-nums">{ui.spread.toFixed(2)}</span>
+    <input type="range" min="0.35" max="1.6" step="0.05" bind:value={ui.spread} class="w-full accent-[#3987e5]" />
+  </label>
 
   {@render heading("colour & size")}
   <div class="flex gap-1 flex-wrap">
@@ -123,7 +145,7 @@
   </label>
 
   {@render heading("links & labels")}
-  <label class="block">
+  <label class="block" title="draw a line from each institution to its k most similar peers">
     neighbour links <span class="text-white tabular-nums">{ui.linkK === 0 ? "off" : `k=${ui.linkK}`}</span>
     <input type="range" min="0" max={data.neighbourCount} step="1" bind:value={ui.linkK} class="w-full accent-[#3987e5]" />
   </label>
@@ -132,10 +154,26 @@
       link opacity <span class="text-white tabular-nums">{ui.linkOpacity.toFixed(2)}</span>
       <input type="range" min="0.01" max="0.3" step="0.01" bind:value={ui.linkOpacity} class="w-full accent-[#3987e5]" />
     </label>
+    <label class="block" title="hide links whose profile similarity is below this">
+      min link similarity <span class="text-white tabular-nums">{ui.linkMinSim.toFixed(2)}</span>
+      <input type="range" min="-1" max="0.98" step="0.02" bind:value={ui.linkMinSim} class="w-full accent-[#3987e5]" />
+    </label>
+    <label class="flex items-center justify-between" title="keep only pairs that are each other's nearest neighbours — the structural backbone">
+      <span>mutual links only</span>
+      <input type="checkbox" bind:checked={ui.linkMutual} class="accent-[#3987e5]" />
+    </label>
   {/if}
   <label class="block" title="labels adapt to zoom — zoom into a region to reveal its institutions">
     name labels <span class="text-white tabular-nums">{ui.labelCount === 0 ? "off" : ui.labelCount}</span>
-    <input type="range" min="0" max="120" step="5" bind:value={ui.labelCount} class="w-full accent-[#3987e5]" />
+    <input type="range" min="0" max="200" step="5" bind:value={ui.labelCount} class="w-full accent-[#3987e5]" />
+  </label>
+  <label class="flex items-center justify-between">
+    <span>fastest-movers list</span>
+    <input type="checkbox" bind:checked={ui.moversOpen} class="accent-[#3987e5]" />
+  </label>
+  <label class="flex items-center justify-between" title="fade everything except the selection and its neighbours">
+    <span>dim others on select</span>
+    <input type="checkbox" bind:checked={ui.dimOnSelect} class="accent-[#3987e5]" />
   </label>
 
   {@render heading("uncertainty")}

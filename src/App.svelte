@@ -32,15 +32,15 @@
     const W = data.windows.length;
     const scored: { index: number; score: number }[] = [];
     for (let i = 0; i < data.n; i++) {
+      if (ui.countryFilter >= 0 && data.countryIndex[i] !== ui.countryFilter) continue;
       let m = 0;
       for (let w = 0; w < W; w++) m = Math.max(m, data.exposure[i * W + w]);
       if (m >= ui.minExposureLog) scored.push({ index: i, score: m });
     }
     scored.sort((a, b) => b.score - a.score);
-    const pool = scored.slice(0, 2500);
-    const cutIndex = Math.floor(pool.length * 0.12);
-    const cut = pool.length ? pool[Math.min(cutIndex, pool.length - 1)].score : 0;
-    return pool.map(({ index, score }) => ({ index, name: data.names[index], tier: score >= cut ? 0 : 1 }));
+    const cutIndex = Math.floor(scored.length * 0.12);
+    const cut = scored.length ? scored[Math.min(cutIndex, scored.length - 1)].score : 0;
+    return scored.map(({ index, score }) => ({ index, name: data.names[index], tier: score >= cut ? 0 : 1 }));
   });
 
   const pick = (index: number) => {
@@ -81,15 +81,15 @@
       const value = params.get(key);
       if (value) (ui as any)[key] = value;
     }
-    for (const key of ["playSpeed", "sizeContrast", "linkOpacity", "haloScale", "pointScale", "pointOpacity", "trail"] as const) {
+    for (const key of ["playSpeed", "sizeContrast", "linkOpacity", "linkMinSim", "haloScale", "pointScale", "pointOpacity", "trail", "spread"] as const) {
       const value = params.get(key);
       if (value !== null && !Number.isNaN(Number(value))) (ui as any)[key] = Number(value);
     }
-    for (const key of ["linkK", "labelCount", "minExposureLog"] as const) {
+    for (const key of ["linkK", "labelCount", "minExposureLog", "axisX", "axisY", "axisZ", "countryFilter"] as const) {
       const value = params.get(key);
       if (value !== null && !Number.isNaN(Number(value))) (ui as any)[key] = Math.round(Number(value));
     }
-    for (const key of ["singleRun", "halo", "autoRotate", "playing", "view2d"] as const) {
+    for (const key of ["singleRun", "halo", "autoRotate", "playing", "view2d", "linkMutual", "moversOpen", "dimOnSelect"] as const) {
       const value = params.get(key);
       if (value !== null) (ui as any)[key] = value === "1" || value === "true";
     }
@@ -107,7 +107,10 @@
     })();
 
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") ui.selected = -1;
+      if (event.key === "Escape") {
+        ui.selected = -1;
+        ui.countryFilter = -1;
+      }
     };
     window.addEventListener("keydown", onKey);
 
@@ -130,20 +133,28 @@
           ui.t = t;
         }
         const wNear = Math.min(Math.round(ui.t), maxT);
-        const key = `${sceneKey}:${ui.selected}:${wNear}`;
+        const key = `${sceneKey}:${ui.selected}:${wNear}:${ui.dimOnSelect}:${ui.countryFilter}`;
         if (key !== dimKey) {
           dimKey = key;
           let related: Set<number> | null = null;
-          if (ui.selected >= 0) {
+          if (ui.selected >= 0 && ui.dimOnSelect) {
             related = new Set([ui.selected]);
             const K = data.neighbourCount;
             for (let e = 0; e < K; e++) {
               related.add(data.neighbours[(ui.selected * data.windows.length + wNear) * K + e]);
             }
+            relatedSet = related;
+          } else {
+            relatedSet = null;
+            if (ui.countryFilter >= 0) {
+              related = new Set();
+              for (let i = 0; i < data.n; i++) {
+                if (data.countryIndex[i] === ui.countryFilter) related.add(i);
+              }
+            }
           }
           scenes.s3.setDim(related);
           scenes.s2.setDim(related);
-          relatedSet = related;
         }
         for (const scene of [scenes.s3, scenes.s2]) {
           scene.apply(ui.t, ui.singleRun, ui.halo, ui.haloScale, ui.pointScale, ui.autoRotate);
@@ -224,12 +235,14 @@
       dimKey = "";
       relatedSet = null;
       for (const scene of [scenes.s3, scenes.s2]) {
+        scene.setAxes([ui.axisX, ui.axisY, ui.axisZ]);
         scene.setColors(ui.colorBy);
         scene.setVisibility(ui.minExposureLog);
-        scene.setLinks(ui.linkK);
+        scene.setLinkOptions(ui.linkK, Math.round(((ui.linkMinSim + 1) / 2) * 255), ui.linkMutual);
         scene.setLinkOpacity(ui.linkOpacity);
         scene.setSizes(ui.sizeContrast);
         scene.setPointOpacity(ui.pointOpacity);
+        scene.setSpread(ui.spread);
         scene.setTrail(ui.trail);
       }
     });
@@ -252,8 +265,24 @@
   $effect(() => {
     if (!ui.loaded) return;
     const k = ui.linkK;
-    scenes?.s3.setLinks(k);
-    scenes?.s2.setLinks(k);
+    const sim = Math.round(((ui.linkMinSim + 1) / 2) * 255);
+    const mutual = ui.linkMutual;
+    scenes?.s3.setLinkOptions(k, sim, mutual);
+    scenes?.s2.setLinkOptions(k, sim, mutual);
+  });
+
+  $effect(() => {
+    if (!ui.loaded) return;
+    const axes: [number, number, number] = [ui.axisX, ui.axisY, ui.axisZ];
+    scenes?.s3.setAxes(axes);
+    scenes?.s2.setAxes(axes);
+  });
+
+  $effect(() => {
+    if (!ui.loaded) return;
+    const spread = ui.spread;
+    scenes?.s3.setSpread(spread);
+    scenes?.s2.setSpread(spread);
   });
 
   $effect(() => {
@@ -307,7 +336,7 @@
     {#if ui.view2d}
       <div class="hidden sm:block absolute bottom-4 left-4 w-[300px] h-[240px] rounded-lg overflow-hidden border border-white/10 bg-[#0d0d0d]/80">
         <div class="absolute top-1.5 left-2 z-10 text-[10px] uppercase tracking-wider text-[#898781]">
-          top view · PC1 × PC2
+          top view · PC{ui.axisX + 1} × PC{ui.axisY + 1}
         </div>
         {#key sceneKey}
           <canvas bind:this={canvas2d} class="h-full w-full block"></canvas>
@@ -350,7 +379,7 @@
     <aside class="w-[340px] shrink-0 h-full overflow-y-auto bg-[#1a1a19] border-l border-white/10 p-4 flex flex-col gap-4">
       <Search data={activeData} />
       <Detail data={activeData} {instData} />
-      {#if ui.colorBy === "speed"}
+      {#if ui.moversOpen}
         <Movers data={activeData} />
       {/if}
       <Controls data={activeData} {datasets} onDataset={switchDataset} onReset={resetView} />

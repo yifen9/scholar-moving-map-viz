@@ -4,6 +4,16 @@ import type { Dataset } from "./data";
 import { CONTINENT_COLORS, SPEED_RAMP, countryColor, hex, rampColor } from "./palette";
 import { CONTINENT_NAMES } from "./continents";
 
+const SPREAD_GLSL = /* glsl */ `
+uniform float uSpread;
+uniform float uRadius;
+vec3 spreadPos(vec3 p) {
+  float r = length(p);
+  if (r < 1e-6) return p;
+  return p * pow(r / uRadius, uSpread - 1.0);
+}
+`;
+
 const VERTEX = /* glsl */ `
 attribute vec3 pA; attribute vec3 pB;
 attribute vec3 qA; attribute vec3 qB;
@@ -20,12 +30,13 @@ uniform float uHaloPass;
 uniform float uHaloScale;
 uniform float uPixelRatio;
 uniform float uCoreAlpha;
+${SPREAD_GLSL}
 varying vec3 vColor;
 varying float vAlpha;
 
 void main() {
   float s = smoothstep(0.0, 1.0, uF);
-  vec3 pos = mix(mix(pA, pB, s), mix(qA, qB, s), uSingle);
+  vec3 pos = spreadPos(mix(mix(pA, pB, s), mix(qA, qB, s), uSingle));
   if (uFlat > 0.5) pos.z = 0.0;
   vec4 mv = modelViewMatrix * vec4(pos, 1.0);
   float rel = clamp(mix(relA, relB, uF), 0.0, 1.0);
@@ -62,10 +73,11 @@ attribute vec3 pA; attribute vec3 pB;
 attribute vec3 aColor;
 uniform float uF;
 uniform float uFlat;
+${SPREAD_GLSL}
 varying vec3 vColor;
 void main() {
   float s = smoothstep(0.0, 1.0, uF);
-  vec3 pos = mix(pA, pB, s);
+  vec3 pos = spreadPos(mix(pA, pB, s));
   if (uFlat > 0.5) pos.z = 0.0;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
   vColor = aColor;
@@ -115,9 +127,14 @@ export class MapScene {
   canvas: HTMLCanvasElement;
   observer: ResizeObserver;
   W: number;
+  C: number;
+  axes: [number, number, number] = [0, 1, 2];
+  spread = 1;
   segment = -1;
   edgeWindow = -1;
   linkK = 0;
+  linkSim = 0;
+  linkMutual = false;
   edgeOpacity = 0.06;
   baseEdgeOpacity = 0.06;
   dimActive = false;
@@ -128,27 +145,21 @@ export class MapScene {
   speedRank: Float32Array | null = null;
   exposureRank: Float32Array | null = null;
   disposed = false;
+  downX = 0;
+  downY = 0;
 
   constructor(canvas: HTMLCanvasElement, options: SceneOptions) {
     this.canvas = canvas;
     this.data = options.data;
     this.flat = options.flat;
     this.W = options.data.windows.length;
+    this.C = options.data.components;
     const { n } = options.data;
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
     this.renderer.setClearColor(new THREE.Color("#0d0d0d"), 1);
 
-    const norms = new Float32Array(options.data.n);
-    for (let i = 0; i < options.data.n; i++) {
-      let m = 0;
-      for (let w = 0; w < this.W; w++) {
-        for (let k = 0; k < 3; k++) m = Math.max(m, Math.abs(options.data.positions[(i * this.W + w) * 3 + k]));
-      }
-      norms[i] = m;
-    }
-    norms.sort();
-    this.radius = Math.max(norms[Math.floor(options.data.n * 0.95)], 0.05);
+    this.computeRadius();
 
     if (options.flat) {
       const f = this.radius * 1.3;
@@ -187,7 +198,7 @@ export class MapScene {
     const span = Math.max(expMax - expMin, 1e-6);
     for (let i = 0; i < n; i++) this.exposureNorm[i] = (this.exposureNorm[i] - expMin) / span;
     this.geometry.setAttribute("aSize", new THREE.BufferAttribute(new Float32Array(n), 1));
-    this.setSizes(0.7);
+    this.setSizes(0.8);
     this.geometry.setAttribute("aVisible", new THREE.BufferAttribute(new Float32Array(n).fill(1), 1));
     this.geometry.setAttribute("aDim", new THREE.BufferAttribute(new Float32Array(n).fill(1), 1));
     this.geometry.setAttribute("position", this.geometry.getAttribute("pA"));
@@ -202,6 +213,8 @@ export class MapScene {
       uHaloScale: { value: 1 },
       uPixelRatio: { value: Math.min(window.devicePixelRatio, 2) },
       uCoreAlpha: { value: 0.85 },
+      uSpread: { value: 1 },
+      uRadius: { value: this.radius },
     });
     this.uniformsCore = makeUniforms(0);
     this.uniformsHalo = makeUniforms(1);
@@ -293,17 +306,41 @@ export class MapScene {
     this.setSegment(0);
   }
 
-  downX = 0;
-  downY = 0;
-
   dragDistance(event: MouseEvent): number {
     return Math.hypot(event.clientX - this.downX, event.clientY - this.downY);
+  }
+
+  computeRadius(): void {
+    const d = this.data;
+    const norms = new Float32Array(d.n);
+    for (let i = 0; i < d.n; i++) {
+      let m = 0;
+      for (let w = 0; w < this.W; w++) {
+        for (const axis of this.axes) {
+          m = Math.max(m, Math.abs(d.positions[(i * this.W + w) * this.C + axis]));
+        }
+      }
+      norms[i] = m;
+    }
+    norms.sort();
+    this.radius = Math.max(norms[Math.floor(d.n * 0.95)], 0.05);
+  }
+
+  setAxes(axes: [number, number, number]): void {
+    this.axes = axes;
+    this.computeRadius();
+    for (const uniforms of [this.uniformsCore, this.uniformsHalo]) uniforms.uRadius.value = this.radius;
+    if (this.edgeUniforms) this.edgeUniforms.uRadius.value = this.radius;
+    if (this.segment >= 0) this.setSegment(this.segment);
+    this.edgeWindow = -1;
+    this.resize();
   }
 
   setSegment(segment: number): void {
     this.segment = segment;
     const { n, positions, positionsSingle, reliability } = this.data;
     const W = this.W;
+    const C = this.C;
     const a = segment;
     const b = Math.min(segment + 1, W - 1);
     const pA = this.geometry.getAttribute("pA") as THREE.BufferAttribute;
@@ -319,13 +356,15 @@ export class MapScene {
     const arrRA = relA.array as Float32Array;
     const arrRB = relB.array as Float32Array;
     for (let i = 0; i < n; i++) {
-      const ia = (i * W + a) * 3;
-      const ib = (i * W + b) * 3;
+      const ia = (i * W + a) * C;
+      const ib = (i * W + b) * C;
       const o = i * 3;
-      arrPA[o] = positions[ia]; arrPA[o + 1] = positions[ia + 1]; arrPA[o + 2] = positions[ia + 2];
-      arrPB[o] = positions[ib]; arrPB[o + 1] = positions[ib + 1]; arrPB[o + 2] = positions[ib + 2];
-      arrQA[o] = positionsSingle[ia]; arrQA[o + 1] = positionsSingle[ia + 1]; arrQA[o + 2] = positionsSingle[ia + 2];
-      arrQB[o] = positionsSingle[ib]; arrQB[o + 1] = positionsSingle[ib + 1]; arrQB[o + 2] = positionsSingle[ib + 2];
+      for (let k = 0; k < 3; k++) {
+        arrPA[o + k] = positions[ia + this.axes[k]];
+        arrPB[o + k] = positions[ib + this.axes[k]];
+        arrQA[o + k] = positionsSingle[ia + this.axes[k]];
+        arrQB[o + k] = positionsSingle[ib + this.axes[k]];
+      }
       arrRA[i] = reliability[i * W + a];
       arrRB[i] = reliability[i * W + b];
     }
@@ -335,14 +374,19 @@ export class MapScene {
   positionAt(index: number, t: number, single: boolean): THREE.Vector3 {
     const source = single ? this.data.positionsSingle : this.data.positions;
     const W = this.W;
+    const C = this.C;
     const segment = Math.min(Math.max(Math.floor(t), 0), W - 2);
     const f = t - segment;
     const s = f * f * (3 - 2 * f);
     const out = new THREE.Vector3();
     for (let k = 0; k < 3; k++) {
-      const a = source[(index * W + segment) * 3 + k];
-      const b = source[(index * W + segment + 1) * 3 + k];
+      const a = source[(index * W + segment) * C + this.axes[k]];
+      const b = source[(index * W + segment + 1) * C + this.axes[k]];
       out.setComponent(k, a + (b - a) * s);
+    }
+    if (this.spread !== 1) {
+      const r = out.length();
+      if (r > 1e-9) out.multiplyScalar(Math.pow(r / this.radius, this.spread - 1));
     }
     if (this.flat) out.z = 0;
     return out;
@@ -368,7 +412,7 @@ export class MapScene {
       if (mode === "continent") {
         rgb = hex(CONTINENT_COLORS[CONTINENT_NAMES[d.continentIndex[i]]]);
       } else if (mode === "country") {
-        rgb = countryColor(d.countryIndex[i]);
+        rgb = countryColor(d.countryRank[d.countryIndex[i]]);
       } else if (mode === "speed") {
         rgb = rampColor(SPEED_RAMP, this.speedRank![i]);
       } else {
@@ -423,6 +467,12 @@ export class MapScene {
     this.uniformsHalo.uCoreAlpha.value = alpha;
   }
 
+  setSpread(spread: number): void {
+    this.spread = spread;
+    for (const uniforms of [this.uniformsCore, this.uniformsHalo]) uniforms.uSpread.value = spread;
+    if (this.edgeUniforms) this.edgeUniforms.uSpread.value = spread;
+  }
+
   setLinkOpacity(opacity: number): void {
     this.baseEdgeOpacity = opacity;
     this.applyEdgeOpacity();
@@ -444,9 +494,20 @@ export class MapScene {
     }
   }
 
-  setLinks(k: number): void {
+  setLinkOptions(k: number, minSim: number, mutual: boolean): void {
     this.linkK = k;
+    this.linkSim = minSim;
+    this.linkMutual = mutual;
     this.edgeWindow = -1;
+  }
+
+  isNeighbour(of: number, target: number, window: number, k: number): boolean {
+    const K = this.data.neighbourCount;
+    const base = (of * this.W + window) * K;
+    for (let e = 0; e < k; e++) {
+      if (this.data.neighbours[base + e] === target) return true;
+    }
+    return false;
   }
 
   rebuildEdges(window: number): void {
@@ -458,6 +519,8 @@ export class MapScene {
     }
     const d = this.data;
     const W = this.W;
+    const C = this.C;
+    const K = d.neighbourCount;
     const maxVerts = d.n * k * 2;
     if (!this.edgeGeometry || (this.edgeGeometry.getAttribute("pA").array as Float32Array).length < maxVerts * 3) {
       this.edgeGeometry?.dispose();
@@ -470,6 +533,8 @@ export class MapScene {
         uF: { value: 0 },
         uFlat: { value: this.flat ? 1 : 0 },
         uOpacity: { value: this.edgeOpacity },
+        uSpread: { value: this.spread },
+        uRadius: { value: this.radius },
       };
       const material = new THREE.ShaderMaterial({
         uniforms: this.edgeUniforms,
@@ -500,14 +565,19 @@ export class MapScene {
     for (let i = 0; i < d.n; i++) {
       if (visible[i] < 0.5) continue;
       for (let e = 0; e < k; e++) {
-        const j = d.neighbours[(i * W + window) * d.neighbourCount + e];
+        const slot = (i * W + window) * K + e;
+        const j = d.neighbours[slot];
         if (visible[j] < 0.5) continue;
+        if (d.neighbourSims[slot] < this.linkSim) continue;
+        if (this.linkMutual && !this.isNeighbour(j, i, window, k)) continue;
         for (const [endpoint, offset] of [[i, v], [j, v + 1]] as const) {
-          const ia = (endpoint * W + a) * 3;
-          const ib = (endpoint * W + b) * 3;
+          const ia = (endpoint * W + a) * C;
+          const ib = (endpoint * W + b) * C;
           const o = offset * 3;
-          arrPA[o] = source[ia]; arrPA[o + 1] = source[ia + 1]; arrPA[o + 2] = source[ia + 2];
-          arrPB[o] = source[ib]; arrPB[o + 1] = source[ib + 1]; arrPB[o + 2] = source[ib + 2];
+          for (let axisIndex = 0; axisIndex < 3; axisIndex++) {
+            arrPA[o + axisIndex] = source[ia + this.axes[axisIndex]];
+            arrPB[o + axisIndex] = source[ib + this.axes[axisIndex]];
+          }
           arrColor[o] = colors[i * 3]; arrColor[o + 1] = colors[i * 3 + 1]; arrColor[o + 2] = colors[i * 3 + 2];
         }
         v += 2;
@@ -529,14 +599,10 @@ export class MapScene {
     this.marker.position.copy(p);
     this.marker.visible = true;
     if (!this.flat) this.marker.lookAt(this.camera.position);
-    const source = single ? this.data.positionsSingle : this.data.positions;
     const attribute = this.trail.geometry.getAttribute("position") as THREE.BufferAttribute;
     for (let w = 0; w < this.W; w++) {
-      for (let k = 0; k < 3; k++) {
-        let value = source[(index * this.W + w) * 3 + k];
-        if (this.flat && k === 2) value = 0;
-        attribute.setComponent(w, k, value);
-      }
+      const point = this.positionAt(index, w, single);
+      attribute.setXYZ(w, point.x, point.y, point.z);
     }
     attribute.needsUpdate = true;
     this.trail.geometry.setDrawRange(0, this.W);
