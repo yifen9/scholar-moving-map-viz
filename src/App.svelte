@@ -75,6 +75,7 @@
     let frame = 0;
     let last = performance.now();
     let direction = 1;
+    let camFrame = 0;
 
     const params = new URLSearchParams(window.location.search);
     for (const key of ["colorBy", "level", "datasetId"] as const) {
@@ -165,6 +166,11 @@
           yearEl.textContent = data.stepYears === 1
             ? String(Math.round(parseInt(data.windows[0]) + ui.t))
             : data.windows[wNear];
+        }
+        camFrame = (camFrame + 1) % 20;
+        if (camFrame === 0) {
+          const p = scenes.s3.camera.position;
+          ui.camLive = `${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)}`;
         }
         if (labelHost) {
           const slots = labelHost.children;
@@ -317,6 +323,10 @@
     scenes?.s3.resetView();
     scenes?.s2.resetView();
   };
+
+  const setCamera = (x: number, y: number, z: number) => {
+    scenes?.s3.setCameraPosition(x, y, z);
+  };
 </script>
 
 <div class="h-screen w-screen bg-[#0d0d0d] text-white flex overflow-hidden font-sans">
@@ -382,7 +392,7 @@
       {#if ui.moversOpen}
         <Movers data={activeData} />
       {/if}
-      <Controls data={activeData} {datasets} onDataset={switchDataset} onReset={resetView} />
+      <Controls data={activeData} {datasets} onDataset={switchDataset} onReset={resetView} onCamera={setCamera} />
       <div class="mt-auto pt-3 border-t border-white/10 text-[11px] text-[#898781] leading-relaxed">
         <button class="underline hover:text-white" onclick={() => (ui.aboutOpen = true)}>about this map</button>
         <div class="mt-1">Yifeng Li · <a class="hover:text-white" href="https://yifen9.li">yifen9.li</a></div>

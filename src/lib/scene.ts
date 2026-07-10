@@ -44,7 +44,7 @@ void main() {
   float core = aSize * uScale;
   float halo = core * (1.8 + 7.0 * uncertainty * uHaloScale);
   float size = mix(core, halo, uHaloPass);
-  gl_PointSize = min(size * uPixelRatio * 2.0 / -mv.z, 96.0);
+  gl_PointSize = min(size * uPixelRatio * 2.0 / -mv.z, 192.0);
   gl_Position = projectionMatrix * mv;
   vColor = aColor;
   float haloAlpha = 0.45 * uCoreAlpha * uncertainty * aDim;
@@ -483,6 +483,10 @@ export class MapScene {
     if (this.edgeUniforms) this.edgeUniforms.uOpacity.value = this.edgeOpacity;
   }
 
+  setCameraPosition(x: number, y: number, z: number): void {
+    this.camera.position.set(x, y, z);
+  }
+
   resetView(): void {
     this.controls.target.set(0, 0, 0);
     if (this.flat) {
@@ -564,12 +568,13 @@ export class MapScene {
     let v = 0;
     for (let i = 0; i < d.n; i++) {
       if (visible[i] < 0.5) continue;
-      for (let e = 0; e < k; e++) {
+      let added = 0;
+      for (let e = 0; e < K && added < k; e++) {
         const slot = (i * W + window) * K + e;
         const j = d.neighbours[slot];
         if (visible[j] < 0.5) continue;
         if (d.neighbourSims[slot] < this.linkSim) continue;
-        if (this.linkMutual && !this.isNeighbour(j, i, window, k)) continue;
+        if (this.linkMutual && !this.isNeighbour(j, i, window, K)) continue;
         for (const [endpoint, offset] of [[i, v], [j, v + 1]] as const) {
           const ia = (endpoint * W + a) * C;
           const ib = (endpoint * W + b) * C;
@@ -581,6 +586,7 @@ export class MapScene {
           arrColor[o] = colors[i * 3]; arrColor[o + 1] = colors[i * 3 + 1]; arrColor[o + 2] = colors[i * 3 + 2];
         }
         v += 2;
+        added++;
       }
     }
     this.edgeGeometry.setDrawRange(0, v);
