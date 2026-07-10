@@ -355,8 +355,8 @@
   {#if activeData}
     <aside class="w-[340px] shrink-0 h-full overflow-y-auto bg-[#1a1a19] border-l border-white/10 p-4 flex flex-col gap-4">
       <Search data={activeData} />
-      <Controls data={activeData} {datasets} onDataset={switchDataset} onReset={resetView} />
       <Detail data={activeData} {instData} />
+      <Controls data={activeData} {datasets} onDataset={switchDataset} onReset={resetView} />
       <div class="mt-auto pt-3 border-t border-white/10 text-[11px] text-[#898781] leading-relaxed">
         <button class="underline hover:text-white" onclick={() => (ui.aboutOpen = true)}>about this map</button>
         <div class="mt-1">Yifeng Li · <a class="hover:text-white" href="https://yifen9.li">yifen9.li</a></div>
