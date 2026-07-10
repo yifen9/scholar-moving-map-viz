@@ -1,4 +1,5 @@
 export type ColorMode = "continent" | "speed" | "exposure";
+export type Level = "institution" | "country";
 
 export const ui = $state({
   t: 0,
@@ -12,7 +13,15 @@ export const ui = $state({
   trails: false,
   view2d: true,
   pointScale: 1,
+  linkK: 2,
+  labels: true,
+  autoRotate: false,
+  level: "institution" as Level,
+  datasetId: "",
   selected: -1,
+  hovered: -1,
+  hoverX: 0,
+  hoverY: 0,
   loaded: false,
   aboutOpen: false,
 });

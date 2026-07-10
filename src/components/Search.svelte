@@ -19,7 +19,7 @@
 <section>
   <input
     type="search"
-    placeholder="search institutions…"
+    placeholder={data.level === "country" ? "search countries…" : "search institutions…"}
     bind:value={query}
     class="w-full rounded bg-black/40 border border-white/10 px-3 py-2 text-sm placeholder-[#898781] focus:outline-none focus:border-[#3987e5]"
   />
@@ -35,7 +35,9 @@
             }}
           >
             {data.names[index]}
-            <span class="text-[#898781]">· {data.countries[data.countryIndex[index]]}</span>
+            {#if data.level === "institution"}
+              <span class="text-[#898781]">· {data.countries[data.countryIndex[index]]}</span>
+            {/if}
           </button>
         </li>
       {/each}
